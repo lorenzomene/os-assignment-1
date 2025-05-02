@@ -1,18 +1,22 @@
 #include "csv_processor.h"
+#include <locale.h>
 #include <stdio.h>
 
-int main(void)
+int main(int argc, char **argv)
 {
-    size_t line_count = 0;
-    char **lines = load_csv("devices.csv", &line_count);
+    setlocale(LC_NUMERIC, "C");          /* evita bug de locale no strtod */
 
-    StatsTable table = process_csv_mt(lines, line_count);
+    const char *csv = (argc > 1) ? argv[1] : "devices.csv";
 
-    write_results(&table, "output");
+    size_t nlines = 0;
+    char **lines = load_csv(csv, &nlines);
 
-    printf("Processamento concluído. Arquivo gerado em output/results.csv\n");
+    StatsTable tbl = process_csv_mt(lines, nlines);
+    write_results(&tbl, "output");
 
-    free_csv_lines(lines, line_count);
-    free_table(&table);
+    printf("✓ Processamento concluído: output/results.csv\n");
+
+    free_csv_lines(lines, nlines);
+    free_table(&tbl);
     return 0;
 }
