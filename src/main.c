@@ -113,7 +113,7 @@ int process_line(const char *line, StatsTable *table)
     if (!line_copy)
         return 0;
 
-    char *fields[12] = {NULL}; // We need 12 fields
+    char *fields[12] = {NULL};
     char *token = strtok(line_copy, "|\n");
     int field_count = 0;
 
@@ -123,21 +123,18 @@ int process_line(const char *line, StatsTable *table)
         token = strtok(NULL, "|\n");
     }
 
-    // Check if we have all required fields
     if (field_count != 12)
     {
         free(line_copy);
         return 0;
     }
 
-    // Skip if device or date is empty
     if (!fields[1] || !fields[3] || !*fields[1] || !*fields[3])
     {
         free(line_copy);
         return 0;
     }
 
-    // Parse date (format: YYYY-MM-DD HH:MM:SS)
     int year, month;
     if (sscanf(fields[3], "%d-%d", &year, &month) != 2)
     {
@@ -151,7 +148,6 @@ int process_line(const char *line, StatsTable *table)
         return 0;
     }
 
-    // Check for empty sensor values
     for (int i = 4; i <= 9; i++)
     {
         if (!fields[i] || !*fields[i] || is_empty(fields[i]))
@@ -169,7 +165,6 @@ int process_line(const char *line, StatsTable *table)
 
     DeviceStats *stats = get_or_create_device_stats(table, fields[1], year, month);
 
-    // Update sensor statistics
     for (int i = 0; i < SENSOR_COUNT; i++)
     {
         if (sensors[i] < stats->sensors[i].min)
@@ -184,7 +179,6 @@ int process_line(const char *line, StatsTable *table)
     return 1;
 }
 
-// Write results to CSV file
 void write_results(const StatsTable *table, const char *output_file)
 {
     FILE *f = fopen(output_file, "w");
@@ -194,14 +188,12 @@ void write_results(const StatsTable *table, const char *output_file)
         return;
     }
 
-    // Write header
     fprintf(f, "device;ano-mes;sensor;valor_maximo;valor_medio;valor_minimo\n");
 
     const char *sensor_names[] = {
         "temperatura", "umidade", "luminosidade",
         "ruido", "eco2", "etvoc"};
 
-    // Write data
     for (int i = 0; i < table->size; i++)
     {
         const DeviceStats *entry = &table->entries[i];
