@@ -31,7 +31,6 @@ typedef struct
     int capacity;
 } StatsTable;
 
-// Initialize a new stats table
 void init_stats_table(StatsTable *table, int initial_capacity)
 {
     table->entries = malloc(initial_capacity * sizeof(DeviceStats));
@@ -39,10 +38,8 @@ void init_stats_table(StatsTable *table, int initial_capacity)
     table->capacity = initial_capacity;
 }
 
-// Find or create a device entry in the stats table
 DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, int year, int month)
 {
-    // First try to find existing entry
     for (int i = 0; i < table->size; i++)
     {
         if (strcmp(table->entries[i].device, device) == 0 &&
@@ -53,7 +50,6 @@ DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, i
         }
     }
 
-    // If not found, create new entry
     if (table->size >= table->capacity)
     {
         table->capacity *= 2;
@@ -66,7 +62,6 @@ DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, i
     new_entry->year = year;
     new_entry->month = month;
 
-    // Initialize sensor stats
     for (int i = 0; i < SENSOR_COUNT; i++)
     {
         new_entry->sensors[i].min = 999999.0;
@@ -78,7 +73,6 @@ DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, i
     return new_entry;
 }
 
-// Check if a string is empty or contains only whitespace
 int is_empty(const char *str)
 {
     if (!str)
@@ -92,7 +86,6 @@ int is_empty(const char *str)
     return 1;
 }
 
-// Validate date is after March 2024
 int is_valid_date(int year, int month)
 {
     if (year < 2024)
@@ -104,19 +97,16 @@ int is_valid_date(int year, int month)
     return 1;
 }
 
-// Validate sensor value is a valid number
 int is_valid_sensor_value(const char *str)
 {
     if (!str || is_empty(str))
         return 0;
 
-    // Check if it's a valid number (including negative)
     char *endptr;
     strtod(str, &endptr);
     return *endptr == '\0' || isspace((unsigned char)*endptr);
 }
 
-// Process a single line of CSV data
 int process_line(const char *line, StatsTable *table)
 {
     char *line_copy = strdup(line);
@@ -127,7 +117,6 @@ int process_line(const char *line, StatsTable *table)
     char *token = strtok(line_copy, "|\n");
     int field_count = 0;
 
-    // Split line into fields
     while (token && field_count < 12)
     {
         fields[field_count++] = token;
@@ -156,7 +145,6 @@ int process_line(const char *line, StatsTable *table)
         return 0;
     }
 
-    // Skip data before March 2024
     if (year < 2024 || (year == 2024 && month < 3))
     {
         free(line_copy);
@@ -173,14 +161,12 @@ int process_line(const char *line, StatsTable *table)
         }
     }
 
-    // Parse sensor values
     double sensors[SENSOR_COUNT];
     for (int i = 0; i < SENSOR_COUNT; i++)
     {
         sensors[i] = atof(fields[i + 4]);
     }
 
-    // Get or create device stats
     DeviceStats *stats = get_or_create_device_stats(table, fields[1], year, month);
 
     // Update sensor statistics
@@ -242,18 +228,15 @@ int main(int argc, char **argv)
     const char *input_file = (argc > 1) ? argv[1] : "devices.csv";
     const char *output_file = "output/results.csv";
 
-    // Create output directory if it doesn't exist
     if (system("mkdir -p output") != 0)
     {
         perror("Error creating output directory");
         return 1;
     }
 
-    // Initialize stats table
     StatsTable table;
-    init_stats_table(&table, 1000); // Start with capacity for 1000 devices
+    init_stats_table(&table, 1000);
 
-    // Open and process input file
     FILE *f = fopen(input_file, "r");
     if (!f)
     {
@@ -265,14 +248,12 @@ int main(int argc, char **argv)
     int total_lines = 0;
     int valid_lines = 0;
 
-    // Skip header
     if (!fgets(line, sizeof(line), f))
     {
         fclose(f);
         return 1;
     }
 
-    // Process each line
     while (fgets(line, sizeof(line), f))
     {
         total_lines++;
@@ -284,10 +265,8 @@ int main(int argc, char **argv)
 
     fclose(f);
 
-    // Write results
     write_results(&table, output_file);
 
-    // Cleanup
     free(table.entries);
 
     printf("Processing complete:\n");
