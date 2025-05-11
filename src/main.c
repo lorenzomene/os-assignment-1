@@ -243,7 +243,11 @@ int main(int argc, char **argv)
     const char *output_file = "output/results.csv";
 
     // Create output directory if it doesn't exist
-    system("mkdir -p output");
+    if (system("mkdir -p output") != 0)
+    {
+        perror("Error creating output directory");
+        return 1;
+    }
 
     // Initialize stats table
     StatsTable table;
