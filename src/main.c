@@ -1,22 +1,294 @@
-#include "csv_processor.h"
-#include <locale.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <ctype.h>
+
+#define MAX_LINE_LENGTH 1024
+#define MAX_DEVICE_NAME 100
+#define SENSOR_COUNT 6
+
+typedef struct
+{
+    double min;
+    double max;
+    double sum;
+    int count;
+} SensorStats;
+
+typedef struct
+{
+    char device[MAX_DEVICE_NAME];
+    int year;
+    int month;
+    SensorStats sensors[SENSOR_COUNT];
+} DeviceStats;
+
+typedef struct
+{
+    DeviceStats *entries;
+    int size;
+    int capacity;
+} StatsTable;
+
+// Initialize a new stats table
+void init_stats_table(StatsTable *table, int initial_capacity)
+{
+    table->entries = malloc(initial_capacity * sizeof(DeviceStats));
+    table->size = 0;
+    table->capacity = initial_capacity;
+}
+
+// Find or create a device entry in the stats table
+DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, int year, int month)
+{
+    // First try to find existing entry
+    for (int i = 0; i < table->size; i++)
+    {
+        if (strcmp(table->entries[i].device, device) == 0 &&
+            table->entries[i].year == year &&
+            table->entries[i].month == month)
+        {
+            return &table->entries[i];
+        }
+    }
+
+    // If not found, create new entry
+    if (table->size >= table->capacity)
+    {
+        table->capacity *= 2;
+        table->entries = realloc(table->entries, table->capacity * sizeof(DeviceStats));
+    }
+
+    DeviceStats *new_entry = &table->entries[table->size++];
+    strncpy(new_entry->device, device, MAX_DEVICE_NAME - 1);
+    new_entry->device[MAX_DEVICE_NAME - 1] = '\0';
+    new_entry->year = year;
+    new_entry->month = month;
+
+    // Initialize sensor stats
+    for (int i = 0; i < SENSOR_COUNT; i++)
+    {
+        new_entry->sensors[i].min = 999999.0;
+        new_entry->sensors[i].max = -999999.0;
+        new_entry->sensors[i].sum = 0.0;
+        new_entry->sensors[i].count = 0;
+    }
+
+    return new_entry;
+}
+
+// Check if a string is empty or contains only whitespace
+int is_empty(const char *str)
+{
+    if (!str)
+        return 1;
+    while (*str)
+    {
+        if (!isspace((unsigned char)*str))
+            return 0;
+        str++;
+    }
+    return 1;
+}
+
+// Validate date is after March 2024
+int is_valid_date(int year, int month)
+{
+    if (year < 2024)
+        return 0;
+    if (year == 2024 && month < 3)
+        return 0;
+    if (month < 1 || month > 12)
+        return 0;
+    return 1;
+}
+
+// Validate sensor value is a valid number
+int is_valid_sensor_value(const char *str)
+{
+    if (!str || is_empty(str))
+        return 0;
+
+    // Check if it's a valid number (including negative)
+    char *endptr;
+    strtod(str, &endptr);
+    return *endptr == '\0' || isspace((unsigned char)*endptr);
+}
+
+// Process a single line of CSV data
+int process_line(const char *line, StatsTable *table)
+{
+    char *line_copy = strdup(line);
+    if (!line_copy)
+        return 0;
+
+    char *fields[12] = {NULL}; // We need 12 fields
+    char *token = strtok(line_copy, "|\n");
+    int field_count = 0;
+
+    // Split line into fields
+    while (token && field_count < 12)
+    {
+        fields[field_count++] = token;
+        token = strtok(NULL, "|\n");
+    }
+
+    // Check if we have all required fields
+    if (field_count != 12)
+    {
+        free(line_copy);
+        return 0;
+    }
+
+    // Skip if device or date is empty
+    if (!fields[1] || !fields[3] || !*fields[1] || !*fields[3])
+    {
+        free(line_copy);
+        return 0;
+    }
+
+    // Parse date (format: YYYY-MM-DD HH:MM:SS)
+    int year, month;
+    if (sscanf(fields[3], "%d-%d", &year, &month) != 2)
+    {
+        free(line_copy);
+        return 0;
+    }
+
+    // Skip data before March 2024
+    if (year < 2024 || (year == 2024 && month < 3))
+    {
+        free(line_copy);
+        return 0;
+    }
+
+    // Check for empty sensor values
+    for (int i = 4; i <= 9; i++)
+    {
+        if (!fields[i] || !*fields[i] || is_empty(fields[i]))
+        {
+            free(line_copy);
+            return 0;
+        }
+    }
+
+    // Parse sensor values
+    double sensors[SENSOR_COUNT];
+    for (int i = 0; i < SENSOR_COUNT; i++)
+    {
+        sensors[i] = atof(fields[i + 4]);
+    }
+
+    // Get or create device stats
+    DeviceStats *stats = get_or_create_device_stats(table, fields[1], year, month);
+
+    // Update sensor statistics
+    for (int i = 0; i < SENSOR_COUNT; i++)
+    {
+        if (sensors[i] < stats->sensors[i].min)
+            stats->sensors[i].min = sensors[i];
+        if (sensors[i] > stats->sensors[i].max)
+            stats->sensors[i].max = sensors[i];
+        stats->sensors[i].sum += sensors[i];
+        stats->sensors[i].count++;
+    }
+
+    free(line_copy);
+    return 1;
+}
+
+// Write results to CSV file
+void write_results(const StatsTable *table, const char *output_file)
+{
+    FILE *f = fopen(output_file, "w");
+    if (!f)
+    {
+        perror("Error opening output file");
+        return;
+    }
+
+    // Write header
+    fprintf(f, "device;ano-mes;sensor;valor_maximo;valor_medio;valor_minimo\n");
+
+    const char *sensor_names[] = {
+        "temperatura", "umidade", "luminosidade",
+        "ruido", "eco2", "etvoc"};
+
+    // Write data
+    for (int i = 0; i < table->size; i++)
+    {
+        const DeviceStats *entry = &table->entries[i];
+        for (int s = 0; s < SENSOR_COUNT; s++)
+        {
+            if (entry->sensors[s].count > 0)
+            {
+                double avg = entry->sensors[s].sum / entry->sensors[s].count;
+                fprintf(f, "%s;%04d-%02d;%s;%.2f;%.2f;%.2f\n",
+                        entry->device, entry->year, entry->month,
+                        sensor_names[s],
+                        entry->sensors[s].max,
+                        avg,
+                        entry->sensors[s].min);
+            }
+        }
+    }
+
+    fclose(f);
+}
 
 int main(int argc, char **argv)
 {
-    setlocale(LC_NUMERIC, "C");          /* evita bug de locale no strtod */
+    const char *input_file = (argc > 1) ? argv[1] : "devices.csv";
+    const char *output_file = "output/results.csv";
 
-    const char *csv = (argc > 1) ? argv[1] : "devices.csv";
+    // Create output directory if it doesn't exist
+    system("mkdir -p output");
 
-    size_t nlines = 0;
-    char **lines = load_csv(csv, &nlines);
+    // Initialize stats table
+    StatsTable table;
+    init_stats_table(&table, 1000); // Start with capacity for 1000 devices
 
-    StatsTable tbl = process_csv_mt(lines, nlines);
-    write_results(&tbl, "output");
+    // Open and process input file
+    FILE *f = fopen(input_file, "r");
+    if (!f)
+    {
+        perror("Error opening input file");
+        return 1;
+    }
 
-    printf("✓ Processamento concluído: output/results.csv\n");
+    char line[MAX_LINE_LENGTH];
+    int total_lines = 0;
+    int valid_lines = 0;
 
-    free_csv_lines(lines, nlines);
-    free_table(&tbl);
+    // Skip header
+    if (!fgets(line, sizeof(line), f))
+    {
+        fclose(f);
+        return 1;
+    }
+
+    // Process each line
+    while (fgets(line, sizeof(line), f))
+    {
+        total_lines++;
+        if (process_line(line, &table))
+        {
+            valid_lines++;
+        }
+    }
+
+    fclose(f);
+
+    // Write results
+    write_results(&table, output_file);
+
+    // Cleanup
+    free(table.entries);
+
+    printf("Processing complete:\n");
+    printf("Total lines processed: %d\n", total_lines);
+    printf("Valid lines processed: %d\n", valid_lines);
+    printf("Results written to %s\n", output_file);
     return 0;
 }
