@@ -64,7 +64,7 @@ void *writer_thread_func() {
 
 			for (int k = 0; k < NUM_SENSORS; k++) {
 				SensorStats *sensor = &month->sensor_data[k];
-				char *sensorName = SENSOR_NAMES[k];
+				const char *sensorName = SENSOR_NAMES[k];
 				
 				if (sensor->initialized && sensor->count > 0) {
 					fprintf(outfile, "%s;%s;%s;%.2f;%.2f;%.2f\n",
