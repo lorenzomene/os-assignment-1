@@ -1,3 +1,6 @@
 *.zip
 *.csv
 *.o
+output/
+build/
+iot_analyzer

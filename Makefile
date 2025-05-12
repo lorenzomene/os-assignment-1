@@ -1,11 +1,11 @@
-SRC_DIR  := src
-BUILD_DIR:= build
-BIN      := iot_analyzer
+CC = gcc
+CFLAGS = -Wall -Wextra -O2
+SRC_DIR = src
+BUILD_DIR = build
+BIN = iot_analyzer
 
-CC      := gcc
-CFLAGS  := -std=c11 -Wall -Wextra -O2 -pthread
-SRCS    := $(wildcard $(SRC_DIR)/*.c)
-OBJS    := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
+SRCS = $(wildcard $(SRC_DIR)/*.c)
+OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
