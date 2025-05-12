@@ -204,7 +204,7 @@ int main() {
 
 	free(workerQueues);
 
-	// Sinalizar que a produção para a writer queue terminou (workers são os produtores)
+	// Cria a thread do escritor 
 	if (pthread_create(&writerThread, NULL, writer_thread_func, NULL) != 0) {
 		perror("Failed to create writer thread");
 		return 1;
