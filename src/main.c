@@ -1,269 +1,221 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+#include <pthread.h>
+#include <unistd.h> 
+#include <float.h>
 #include <ctype.h>
+#include <stdint.h>
+#include "murmur_hash.h"
+#include "globals.h"
+#include "queue.h"
+#include "types.h"
+#include "helpers.h"
+#include "worker.h"
+#include "writer.h"
 
-#define MAX_LINE_LENGTH 1024
-#define MAX_DEVICE_NAME 100
-#define SENSOR_COUNT 6
 
-typedef struct
-{
-    double min;
-    double max;
-    double sum;
-    int count;
-} SensorStats;
+int should_fiter_line(char *fields[INPUT_FILE_FIELDS]){
+	int year, month;
+	sscanf(fields[DATE], "%d-%d", &year, &month);
+	if (year < 2024 || (year == 2024 && month < 3)) {
+		return 1;
+	}
 
-typedef struct
-{
-    char device[MAX_DEVICE_NAME];
-    int year;
-    int month;
-    SensorStats sensors[SENSOR_COUNT];
-} DeviceStats;
-
-typedef struct
-{
-    DeviceStats *entries;
-    int size;
-    int capacity;
-} StatsTable;
-
-void init_stats_table(StatsTable *table, int initial_capacity)
-{
-    table->entries = malloc(initial_capacity * sizeof(DeviceStats));
-    table->size = 0;
-    table->capacity = initial_capacity;
+	return 0;
 }
 
-DeviceStats *get_or_create_device_stats(StatsTable *table, const char *device, int year, int month)
-{
-    for (int i = 0; i < table->size; i++)
-    {
-        if (strcmp(table->entries[i].device, device) == 0 &&
-            table->entries[i].year == year &&
-            table->entries[i].month == month)
-        {
-            return &table->entries[i];
-        }
-    }
+int main() {
+	printf("Iniciando o processamento...\n");
 
-    if (table->size >= table->capacity)
-    {
-        table->capacity *= 2;
-        table->entries = realloc(table->entries, table->capacity * sizeof(DeviceStats));
-    }
+	// Identifica quantos núcleos estão disponíveis
+	long coreCount = sysconf(_SC_NPROCESSORS_ONLN);
+	N_WORKER_THREADS = (coreCount > 1) ? (int)(coreCount) : 1;
 
-    DeviceStats *new_entry = &table->entries[table->size++];
-    strncpy(new_entry->device, device, MAX_DEVICE_NAME - 1);
-    new_entry->device[MAX_DEVICE_NAME - 1] = '\0';
-    new_entry->year = year;
-    new_entry->month = month;
+	printf("Usando %d threads.\n", N_WORKER_THREADS);
 
-    for (int i = 0; i < SENSOR_COUNT; i++)
-    {
-        new_entry->sensors[i].min = 999999.0;
-        new_entry->sensors[i].max = -999999.0;
-        new_entry->sensors[i].sum = 0.0;
-        new_entry->sensors[i].count = 0;
-    }
+	// Inicializa as filas para os workers
+	workerQueues = malloc(N_WORKER_THREADS * sizeof(Queue));
 
-    return new_entry;
-}
+	if (!workerQueues) {
+		perror("Failed to allocate workerQueues");
+		return 1;
+	}
 
-int is_empty(const char *str)
-{
-    if (!str)
-        return 1;
-    while (*str)
-    {
-        if (!isspace((unsigned char)*str))
-            return 0;
-        str++;
-    }
-    return 1;
-}
+	for (int i = 0; i < N_WORKER_THREADS; ++i) {
+		queue_init(&workerQueues[i]);
+	}
 
-int is_valid_date(int year, int month)
-{
-    if (year < 2024)
-        return 0;
-    if (year == 2024 && month < 3)
-        return 0;
-    if (month < 1 || month > 12)
-        return 0;
-    return 1;
-}
+	// Inicializa o mutex para os dados do escritor/agregador
+	if (pthread_mutex_init(&writer_data_mutex, NULL) != 0) {
+		perror("Failed to initialize writer_data_mutex");
+		return 1;
+	}
 
-int is_valid_sensor_value(const char *str)
-{
-    if (!str || is_empty(str))
-        return 0;
+	// Inicializa as threads de trabalho
+	pthread_t workerThreads[N_WORKER_THREADS];
+	pthread_t writerThread;
 
-    char *endptr;
-    strtod(str, &endptr);
-    return *endptr == '\0' || isspace((unsigned char)*endptr);
-}
+	allDevicesData = malloc(allDevicesCapacity * sizeof(DeviceAggregates *));
+	if (!allDevicesData) {
+		perror("Failed to allocate allDevicesData");
+		return 1;
+	}
 
-int process_line(const char *line, StatsTable *table)
-{
-    char *line_copy = strdup(line);
-    if (!line_copy)
-        return 0;
 
-    char *fields[12] = {NULL};
-    char *token = strtok(line_copy, "|\n");
-    int field_count = 0;
+	for (long i = 0; i < N_WORKER_THREADS; ++i) {
+		if (pthread_create(&workerThreads[i], NULL, worker_thread_func, (void *)i) != 0) {
+			perror("Failed to create worker thread");
+			return 1;
+		}
+	}
 
-    while (token && field_count < 12)
-    {
-        fields[field_count++] = token;
-        token = strtok(NULL, "|\n");
-    }
+	FILE *inputFile = fopen(INPUT_FILENAME, "r");
 
-    if (field_count != 12)
-    {
-        free(line_copy);
-        return 0;
-    }
+	if (!inputFile){
+		perror("Failed to open input file");
+		return 1;
+	}
 
-    if (!fields[1] || !fields[3] || !*fields[1] || !*fields[3])
-    {
-        free(line_copy);
-        return 0;
-    }
 
-    int year, month;
-    if (sscanf(fields[3], "%d-%d", &year, &month) != 2)
-    {
-        free(line_copy);
-        return 0;
-    }
+	char line[MAX_LINE_LEN];
+	
+	//  Pula o cabeçalho
+	if (fgets(line, sizeof(line), inputFile) == NULL) {
+		fprintf(stderr, "Arquivo de entrada vazio ou erro ao ler cabeçalho.\n");
+		fclose(inputFile);
+		return 1;
+	}
 
-    if (year < 2024 || (year == 2024 && month < 3))
-    {
-        free(line_copy);
-        return 0;
-    }
+	int lineCount = 0;
 
-    for (int i = 4; i <= 9; i++)
-    {
-        if (!fields[i] || !*fields[i] || is_empty(fields[i]))
-        {
-            free(line_copy);
-            return 0;
-        }
-    }
+	while (fgets(line, sizeof(line), inputFile)) {
+		lineCount++;
 
-    double sensors[SENSOR_COUNT];
-    for (int i = 0; i < SENSOR_COUNT; i++)
-    {
-        sensors[i] = atof(fields[i + 4]);
-    }
+		char *token;
+		char *fields[INPUT_FILE_FIELDS];
 
-    DeviceStats *stats = get_or_create_device_stats(table, fields[1], year, month);
+		// Lê cada um dos campos da linha e joga eles no array fields
+		int fieldsCounter = 0;
+		char *linePtr = line;
+		while ((token = strsep(&linePtr, INPUT_DELIMITER)) != NULL && fieldsCounter < INPUT_FILE_FIELDS) {
+			fields[fieldsCounter++] = trim_whitespace(token);
+		}
 
-    for (int i = 0; i < SENSOR_COUNT; i++)
-    {
-        if (sensors[i] < stats->sensors[i].min)
-            stats->sensors[i].min = sensors[i];
-        if (sensors[i] > stats->sensors[i].max)
-            stats->sensors[i].max = sensors[i];
-        stats->sensors[i].sum += sensors[i];
-        stats->sensors[i].count++;
-    }
+		if (fieldsCounter < INPUT_FILE_FIELDS) {
+			continue;
+		}
 
-    free(line_copy);
-    return 1;
-}
+		char *deviceId = fields[DEVICE_ID];
 
-void write_results(const StatsTable *table, const char *output_file)
-{
-    FILE *f = fopen(output_file, "w");
-    if (!f)
-    {
-        perror("Error opening output file");
-        return;
-    }
+		// Filtra device_id vazios
+		if (strlen(deviceId) == 0) {
+			continue;
+		}
 
-    fprintf(f, "device;ano-mes;sensor;valor_maximo;valor_medio;valor_minimo\n");
+		char *date = fields[DATE];	
 
-    const char *sensor_names[] = {
-        "temperatura", "umidade", "luminosidade",
-        "ruido", "eco2", "etvoc"};
+		// Filtra data vazia
+		if (strlen(date) == 0) {
+			continue;
+		}
+		
+		// Converte a data para o formato YYYY-MM
+		char anoMes[ANO_MES_LEN]; 
+		snprintf(anoMes, sizeof(anoMes), "%.7s", date); 
 
-    for (int i = 0; i < table->size; i++)
-    {
-        const DeviceStats *entry = &table->entries[i];
-        for (int s = 0; s < SENSOR_COUNT; s++)
-        {
-            if (entry->sensors[s].count > 0)
-            {
-                double avg = entry->sensors[s].sum / entry->sensors[s].count;
-                fprintf(f, "%s;%04d-%02d;%s;%.2f;%.2f;%.2f\n",
-                        entry->device, entry->year, entry->month,
-                        sensor_names[s],
-                        entry->sensors[s].max,
-                        avg,
-                        entry->sensors[s].min);
-            }
-        }
-    }
+		if(should_fiter_line(fields) == 1){
+			continue;
+		}
 
-    fclose(f);
-}
 
-int main(int argc, char **argv)
-{
-    const char *input_file = (argc > 1) ? argv[1] : "devices.csv";
-    const char *output_file = "output/results.csv";
+		const int sensorFieldsIdx[NUM_SENSORS] = {
+			TEMPERATURE, 
+			HUMIDITY, 
+			LUMINOSITY, 
+			NOISE, 
+			ECO2, 
+			ETVOC
+		};
 
-    if (system("mkdir -p output") != 0)
-    {
-        perror("Error creating output directory");
-        return 1;
-    }
+		// Computa o hash do deviceId para determinar o worker thread
+		// responsavel por processar os dados desse deviceId
+		uint32_t deviceHash = murmur_hash(deviceId, strlen(deviceId), 0);
+		int targetWorkerIdx = deviceHash % N_WORKER_THREADS;
 
-    StatsTable table;
-    init_stats_table(&table, 1000);
 
-    FILE *f = fopen(input_file, "r");
-    if (!f)
-    {
-        perror("Error opening input file");
-        return 1;
-    }
+		for (int i = 0; i < NUM_SENSORS; ++i) {
+			char *sensorVal = fields[sensorFieldsIdx[i]];
 
-    char line[MAX_LINE_LENGTH];
-    int total_lines = 0;
-    int valid_lines = 0;
+			char *endptr;
 
-    if (!fgets(line, sizeof(line), f))
-    {
-        fclose(f);
-        return 1;
-    }
+			if (strlen(sensorVal) == 0) {
+				continue;
+			}
 
-    while (fgets(line, sizeof(line), f))
-    {
-        total_lines++;
-        if (process_line(line, &table))
-        {
-            valid_lines++;
-        }
-    }
+			double value = strtod(sensorVal, &endptr);
 
-    fclose(f);
+			// Verifica se a conversão foi bem-sucedida
+			// endptr deve apontar para o final da string (ou para um espaço em branco)
+			// Se sensorVal == endptr, nenhuma conversão ocorreu.
+			if (sensorVal == endptr || (*endptr != 0 && !isspace((unsigned char)*endptr))) {
+				continue;
+			}
 
-    write_results(&table, output_file);
 
-    free(table.entries);
+			ParsedData *pd = malloc(sizeof(ParsedData));
+			
+			if (!pd) {
+				perror("Failed to malloc ParsedData for worker");
+				// Lidar com erro de memória, talvez parar todas as threads e sair
+				// Por simplicidade, continuamos, mas isso pode levar a dados incompletos.
+				continue;
+			}
 
-    printf("Processing complete:\n");
-    printf("Total lines processed: %d\n", total_lines);
-    printf("Valid lines processed: %d\n", valid_lines);
-    printf("Results written to %s\n", output_file);
-    return 0;
+			
+			// Copia os dados para a estrutura ParsedData
+			strncpy(pd->device_id, deviceId, DEVICE_ID_LEN - 1);
+			pd->device_id[DEVICE_ID_LEN - 1] = '\0';
+
+			strncpy(pd->ano_mes, anoMes, ANO_MES_LEN - 1);
+			pd->ano_mes[ANO_MES_LEN - 1] = '\0';
+			
+			pd->sensor_type = (SensorType) i;
+			pd->value = value;
+
+			// Envia os dados para a fila do worker correspondente
+			queue_push(&workerQueues[targetWorkerIdx], pd);
+		}
+	}
+
+	fclose(inputFile);
+	printf("Arquivo de entrada processado. Aguardando finalização das threads...\n");
+
+	// Sinalizar que a produção para as worker queues terminou
+	for (int i = 0; i < N_WORKER_THREADS; ++i) {
+		queue_signal_producers_finished(&workerQueues[i]);
+	}
+
+	// Esperar workers terminarem
+	for (int i = 0; i < N_WORKER_THREADS; ++i) {
+		pthread_join(workerThreads[i], NULL);
+		queue_destroy(&workerQueues[i]);
+	}
+
+	free(workerQueues);
+
+	// Sinalizar que a produção para a writer queue terminou (workers são os produtores)
+	if (pthread_create(&writerThread, NULL, writer_thread_func, NULL) != 0) {
+		perror("Failed to create writer thread");
+		return 1;
+	}
+
+	// Esperar writer thread terminar
+	pthread_join(writerThread, NULL);
+	
+	pthread_mutex_destroy(&writer_data_mutex);
+
+	printf("Processamento concluído.\n");
+
+	return 0;
 }
