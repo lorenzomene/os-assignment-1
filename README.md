@@ -29,20 +29,19 @@ make clean
 
 ## Sobre o projeto
 
-O arquivo csv de dados (devices.csv) é carregado para dentro do programa com uma leitura sequencial. O programa lê linha a linha do arquivo e vai consumindo os dados, colocando-os em memória. 
+O arquivo de dados (`devices.csv`) é aberto na thread principal e lido sequencialmente.
 
-São feitas filtragens dos dados:
+Nele são feitas filtragens dos dados:
 - Apenas registros a partir de Março/2024
 - Registros sem valores nos sensores são desconsiderados
 
+Cada linha então é despachada para os workers (threads) utilizando filas, cada dispositivo com seu worker especifico e cada worker escuta a sua propria fila.
 
-A carga de dados é dividida entre as threads utilizando o dispositivo como critério. Utilizamos um esquema de filas(Queues) para implementar o multi-threading do programa. Temos uma thread principal responsável por ler o arquivo de entrada `devices.csv` sequencialmente e ir enviando os dados de cada dispositivo para sua respectiva thread.
-
-Para decidirmos qual thread os dados do dispositivos serão enviados utilizamos o algoritmo de MurMurHash, no qual definimos um valor normalizado(hash) entre 1 e N (N sendo o número de threads que o programa utilza) para o dispositivo. Dessa forma, conseguimos garantir que todos os dados relacionados a um dispositivo irão ser analisados sempre por uma mesma Thread/Queue pois os valores de hash nunca irão variar 
-
-A thread principal lê os dados e identifica para qual thread de processamento vai enviá-los. Os dados são enviados para uma Queue da Thread. Na thread ela lê os dados dessa queue e agrega as informações por `dispositivo-mês-ano` 
+Para decidirmos qual thread os dados do dispositivos serão enviados computamos o [MurMurHash](https://en.wikipedia.org/wiki/MurmurHash) do ID do dispositivo e em seguida normalizamos o `int` resultante entre 1 e N (sendo N o número de threads). Dessa forma, conseguimos garantir que todos os dados relacionados a um dispositivo irão ser analisados sempre por uma mesma Thread pois os valores de hash nunca irão variar 
 
 As threads rodam em modo usuário visto que é um programa em C com pthreads.
 
-Esses resultados ficam em memória no programa, após o processamento de todos os dados por parte de todas as threads e suas respectivas queues, os dados são escritos no arquivo de saída `output.csv` sequencialmente
+Os resultados agregados por dispositivos ficam na memoria local do worker até a thread principal sinalizar que acabou de ler o arquivo todo;
+
+Assim que o arquivo todo é lido, todas as threads escrevem na memoria compartilhada e uma thread de escrita é criada, a mesma irá ordenar e escrever todos os dados no arquivo de saida `output.csv` sincronamente.
 
